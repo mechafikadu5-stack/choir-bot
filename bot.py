@@ -3,18 +3,21 @@ from telebot import types
 
 # --- CONFIGURATION ---
 BOT_TOKEN = "8472619296:AAGqtdGygSQWv3cWItNOhkFreVD29ycjgKM"
-ADMIN_IDS = [5618556871]
+ADMIN_IDS = [5618556871,1211251387,542708696,6389855906,1804184096]
 
 # Personalized payment info for choir album
 PAYMENT_INFO = """
 💳 *Payment Methods for C CHOIR Album*
 -----------------------
 🏦 CBE (Commercial Bank of Ethiopia): 
-`1000405576957`
-👤 Name: Mecha Fikadu Chewaka
+`1000176341606`
+👤 Name: Addisu Biru & Girma Regesa
+🏦 Cooperative Bank:
+`1057000131402`
+👤 Name: Gemechis Ayele & Addisu Biru
 
 📱 Telebirr: 
-`0917436644`
+`09xxxxxx`
 👤 Name: Mecha
 -----------------------
 📸 Please send a screenshot of your payment after transferring.
@@ -215,3 +218,4 @@ def handle_admin_decision(call):
 # --- RUN BOT ---
 print("🎵 C CHOIR Album Bot is running...")
 bot.infinity_polling()
+
