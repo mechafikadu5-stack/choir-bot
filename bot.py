@@ -1,221 +1,286 @@
-﻿import telebot
+import telebot
 from telebot import types
+import json
+import os
 
 # --- CONFIGURATION ---
 BOT_TOKEN = "8472619296:AAGqtdGygSQWv3cWItNOhkFreVD29ycjgKM"
-ADMIN_IDS = [5618556871,1211251387,542708696,6389855906,1804184096]
+ADMIN_IDS = [5618556871, 1211251387, 542708696, 6389855906, 1804184096]
+DATA_FILE = "store_memory.json"
 
-# Personalized payment info for choir album
+# Clearer, more professional layout
 PAYMENT_INFO = """
-💳 *Payment Methods for C CHOIR Album*
------------------------
-🏦 CBE (Commercial Bank of Ethiopia): 
-`1000176341606`
-👤 Name: Addisu Biru & Girma Regesa
-🏦 Cooperative Bank:
-`1057000131402`
-👤 Name: Gemechis Ayele & Addisu Biru
+🌟 *C CHOIR ALBUM STORE* 🌟
+━━━━━━━━━━━━━━━━━━━━
+🏦 *CBE (Commercial Bank)*
+└─ `1000176341606`
+└─ 👤 Addisu Biru & Girma Regesa
 
-📱 Telebirr: 
-`09xxxxxx`
-👤 Name: Mecha
------------------------
-📸 Please send a screenshot of your payment after transferring.
+🏦 *Cooperative Bank*
+└─ `1057000131402`
+└─ 👤 Gemechis Ayele & Addisu Biru
+━━━━━━━━━━━━━━━━━━━━
+📝 *Instructions:*
+1. Transfer the total amount.
+2. Take a screenshot of the receipt.
+3. Send the screenshot *right here* in this chat.
 """
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# --- IN-MEMORY DATA STORAGE ---
-songs = {}  # { id: { 'title', 'price', 'file_id', 'file_type' } }
-song_counter = 1
-pending_orders = {}  # { user_id: { 'song_id' } }
+# --- GLOBAL DATA ---
+songs = {}       
+user_carts = {}  
 
-# --- HELPER FUNCTIONS ---
+# --- DATA PERSISTENCE ---
+def load_all_data():
+    global songs, user_carts
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, 'r') as f:
+                data = json.load(f)
+                songs = {int(k): v for k, v in data.get('songs', {}).items()}
+                user_carts = {int(k): v for k, v in data.get('user_carts', {}).items()}
+        except Exception as e:
+            print(f"Error loading data: {e}")
+
+def save_all_data():
+    try:
+        data_to_save = {'songs': songs, 'user_carts': user_carts}
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data_to_save, f, indent=4)
+    except Exception as e:
+        print(f"Error saving data: {e}")
+
+load_all_data()
+
+# --- INTERFACE HELPERS ---
 def is_admin(user_id):
     return user_id in ADMIN_IDS
 
-# --- ADMIN UPLOAD LOGIC ---
-@bot.message_handler(content_types=['audio', 'document', 'video', 'voice'])
-def handle_admin_upload(message):
-    if not is_admin(message.from_user.id):
-        return
+def get_numeric_price(price_str):
+    try:
+        return int(''.join(filter(str.isdigit, str(price_str))))
+    except:
+        return 0
 
-    file_id = ""
-    file_type = message.content_type
+def calculate_total(user_id):
+    selected_ids = user_carts.get(user_id, [])
+    return sum(get_numeric_price(songs[sid]['price']) for sid in selected_ids if sid in songs)
 
-    if file_type == 'audio':
-        file_id = message.audio.file_id
-    elif file_type == 'document':
-        file_id = message.document.file_id
-    elif file_type == 'video':
-        file_id = message.video.file_id
-    elif file_type == 'voice':
-        file_id = message.voice.file_id
-
-    msg = bot.reply_to(message, "📂 File received! Please enter the *Song Title* for the album:")
-    bot.register_next_step_handler(msg, process_title, file_id, file_type)
-
-def process_title(message, file_id, file_type):
-    title = message.text
-    if not title:
-        msg = bot.reply_to(message, "❌ Invalid title. Enter the song title:")
-        bot.register_next_step_handler(msg, process_title, file_id, file_type)
-        return
-
-    msg = bot.reply_to(message, f"💰 Enter the price for '{title}':")
-    bot.register_next_step_handler(msg, process_price, file_id, file_type, title)
-
-def process_price(message, file_id, file_type, title):
-    price = message.text
-    global song_counter
-
-    songs[song_counter] = {
-        'title': title,
-        'price': price,
-        'file_id': file_id,
-        'file_type': file_type
-    }
-
-    bot.reply_to(
-        message,
-        f"✅ Song added to the C CHOIR album!\n🎵 *{title}*\n💰 Price: {price}\nItem #{song_counter}",
-        parse_mode="Markdown"
+def get_main_keyboard(user_id):
+    """Clean, simple main menu that is always accessible."""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
+    markup.add(
+        types.KeyboardButton("🎵 Browse & Select Songs"),
+        types.KeyboardButton("🏠 Back to Main Menu")
     )
-    song_counter += 1
+    if is_admin(user_id):
+        markup.add(types.KeyboardButton("🛠 Admin Panel"))
+    return markup
 
-# --- USER COMMANDS & BROWSING ---
-@bot.message_handler(commands=['start', 'help'])
+def get_song_markup(user_id):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    selected_ids = user_carts.get(user_id, [])
+    
+    # Select All option
+    if len(selected_ids) < len(songs) and len(songs) > 1:
+        markup.add(types.InlineKeyboardButton("📥 Select All Songs", callback_data="buy_all"))
+    
+    for s_id, s_info in songs.items():
+        status = "✅ " if s_id in selected_ids else "💿 "
+        btn_text = f"{status}{s_info['title']} — {s_info['price']}"
+        markup.add(types.InlineKeyboardButton(text=btn_text, callback_data=f"toggle_{s_id}"))
+
+    if selected_ids:
+        total = calculate_total(user_id)
+        markup.add(types.InlineKeyboardButton(text=f"💳 Checkout ({total} ETB)", callback_data="checkout"))
+        markup.add(types.InlineKeyboardButton(text="🗑 Empty Cart", callback_data="clear_cart"))
+    
+    return markup
+
+# --- CORE HANDLERS ---
+@bot.message_handler(commands=['start'])
+@bot.message_handler(func=lambda m: m.text == "🏠 Back to Main Menu")
 def send_welcome(message):
     welcome_text = (
-        "👋 Welcome to the *C CHOIR Album Store*!\n\n"
-        "🎶 Explore our choir songs from *Waldaa Adventistii Guyyaa Torbaffaa* below:"
+        "👋 *Hello and welcome to the C CHOIR Store!*\n\n"
+        "Use the buttons below to browse our album and purchase your favorite songs. "
+        "The system is automatic—once your payment is verified, your songs will be delivered instantly."
     )
-
-    if not songs:
-        bot.send_message(message.chat.id, "🛒 The album is currently empty. Check back later!")
-        return
-
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    for s_id, s_info in songs.items():
-        btn = types.InlineKeyboardButton(
-            text=f"🎵 {s_info['title']} - {s_info['price']}",
-            callback_data=f"buy_{s_id}"
-        )
-        markup.add(btn)
-
-    bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="Markdown")
-
-# --- BUYING FLOW ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
-def handle_buy_request(call):
-    song_id = int(call.data.split('_')[1])
-    user_id = call.from_user.id
-
-    if song_id not in songs:
-        bot.answer_callback_query(call.id, "❌ Song not available.")
-        return
-
-    pending_orders[user_id] = {'song_id': song_id}
-
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=(
-            f"🎵 Selected: *{songs[song_id]['title']}*\n"
-            f"💰 Price: *{songs[song_id]['price']}*\n\n"
-            f"{PAYMENT_INFO}\n"
-            "📸 *Please upload your payment screenshot now.*"
-        ),
+    bot.send_message(
+        message.chat.id, welcome_text, 
+        reply_markup=get_main_keyboard(message.from_user.id), 
         parse_mode="Markdown"
     )
 
-@bot.message_handler(content_types=['photo', 'document'])
-def handle_payment_screenshot(message):
-    user_id = message.from_user.id
-
-    if user_id not in pending_orders:
+@bot.message_handler(func=lambda m: m.text == "🎵 Browse & Select Songs")
+def show_album(message):
+    if not songs:
+        bot.send_message(message.chat.id, "📢 No songs are currently available in the store.")
         return
+    bot.send_message(
+        message.chat.id, 
+        "🎶 *Album Selection*\nSelect the songs you want to buy:", 
+        reply_markup=get_song_markup(message.from_user.id), 
+        parse_mode="Markdown"
+    )
 
-    if message.content_type == 'document':
-        if not (message.document.mime_type and message.document.mime_type.startswith('image/')):
-            bot.reply_to(message, "❌ Please send a photo or image document as payment proof.")
-            return
+@bot.callback_query_handler(func=lambda call: call.data in ["buy_all", "clear_cart", "checkout"] or call.data.startswith('toggle_'))
+def handle_cart_actions(call):
+    user_id = call.from_user.id
+    if user_id not in user_carts: user_carts[user_id] = []
 
-    song_id = pending_orders[user_id]['song_id']
-    song_title = songs[song_id]['title']
+    if call.data.startswith('toggle_'):
+        song_id = int(call.data.split('_')[1])
+        if song_id in user_carts[user_id]:
+            user_carts[user_id].remove(song_id)
+        else:
+            user_carts[user_id].append(song_id)
+        save_all_data()
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=get_song_markup(user_id))
+    
+    elif call.data == "buy_all":
+        user_carts[user_id] = list(songs.keys())
+        save_all_data()
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=get_song_markup(user_id))
+    
+    elif call.data == "clear_cart":
+        user_carts[user_id] = []
+        save_all_data()
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=get_song_markup(user_id))
+    
+    elif call.data == "checkout":
+        total = calculate_total(user_id)
+        items = "\n".join([f"• {songs[sid]['title']}" for sid in user_carts[user_id]])
+        summary_text = (
+            f"🛒 *Your Order Summary*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"{items}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 *Total Amount:* `{total} ETB`\n\n"
+            f"{PAYMENT_INFO}"
+        )
+        bot.send_message(call.message.chat.id, summary_text, parse_mode="Markdown", reply_markup=get_main_keyboard(user_id))
+    
+    bot.answer_callback_query(call.id)
 
-    bot.reply_to(message, "⏳ Payment proof received! Admin will verify shortly.")
-
+# --- PAYMENT PROCESSING ---
+@bot.message_handler(content_types=['photo', 'document'])
+def process_payment_proof(message):
+    user_id = message.from_user.id
+    if not user_carts.get(user_id):
+        bot.reply_to(message, "❌ Your cart is empty. Please select songs before sending payment proof.")
+        return
+    
+    total = calculate_total(user_id)
+    cart_data = ",".join(map(str, user_carts[user_id]))
+    
+    # Notify Admin
     for admin_id in ADMIN_IDS:
         markup = types.InlineKeyboardMarkup()
-        approve_btn = types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user_id}_{song_id}")
-        reject_btn = types.InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user_id}")
-        markup.add(approve_btn, reject_btn)
-
-        caption = (
-            f"🚨 *New Payment Proof*\n"
-            f"User: {message.from_user.first_name}\n"
-            f"Song: {song_title}\n"
-            f"Price: {songs[song_id]['price']}"
+        markup.add(
+            types.InlineKeyboardButton("✅ Approve Payment", callback_data=f"apprv_{user_id}_{cart_data}"),
+            types.InlineKeyboardButton("❌ Reject", callback_data=f"rjct_{user_id}")
         )
-
+        
+        admin_notif = (
+            f"📥 *New Purchase Request*\n\n"
+            f"👤 *Customer:* {message.from_user.first_name} (@{message.from_user.username})\n"
+            f"💰 *Total:* `{total} ETB`"
+        )
         if message.content_type == 'photo':
-            bot.send_photo(admin_id, message.photo[-1].file_id, caption=caption, reply_markup=markup, parse_mode="Markdown")
+            bot.send_photo(admin_id, message.photo[-1].file_id, caption=admin_notif, reply_markup=markup, parse_mode="Markdown")
         else:
-            bot.send_document(admin_id, message.document.file_id, caption=caption, reply_markup=markup, parse_mode="Markdown")
+            bot.send_document(admin_id, message.document.file_id, caption=admin_notif, reply_markup=markup, parse_mode="Markdown")
+    
+    bot.reply_to(message, "⏳ *Thank you!* Your payment proof has been sent to our team for verification.")
 
-# --- ADMIN APPROVAL ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith(('approve_', 'reject_')))
-def handle_admin_decision(call):
-    if not is_admin(call.from_user.id):
+@bot.callback_query_handler(func=lambda call: call.data.startswith(('apprv_', 'rjct_')))
+def admin_approval_logic(call):
+    parts = call.data.split('_')
+    action, customer_id = parts[0], int(parts[1])
+
+    if action == "apprv":
+        song_ids = map(int, parts[2].split(','))
+        bot.send_message(customer_id, "🎉 *Payment Verified!*\nYour songs are being delivered below. Enjoy!")
+        
+        for sid in song_ids:
+            if sid in songs:
+                s = songs[sid]
+                # Dynamic delivery logic based on file type
+                delivery_func = getattr(bot, f"send_{s['file_type']}")
+                delivery_func(customer_id, s['file_id'], caption=f"🎶 {s['title']}")
+        
+        user_carts[customer_id] = []
+        save_all_data()
+        bot.edit_message_caption("✅ *Approved and Delivered*", call.message.chat.id, call.message.message_id)
+    else:
+        bot.send_message(customer_id, "❌ *Payment Verification Failed.*\nYour receipt was not accepted. Please contact support if you believe this is an error.")
+        bot.edit_message_caption("❌ *Payment Rejected*", call.message.chat.id, call.message.message_id)
+
+# --- ADMIN PANEL ---
+@bot.message_handler(func=lambda m: m.text == "🛠 Admin Panel")
+def show_admin_panel(message):
+    if not is_admin(message.from_user.id): return
+    if not songs:
+        bot.send_message(message.chat.id, "The store database is empty.")
         return
-
-    data = call.data.split('_', maxsplit=2)
-    action = data[0]
-    target_user_id = int(data[1])
-
-    if action == "approve":
-        song_id = int(data[2])
-        song = songs.get(song_id)
-        if not song:
-            bot.answer_callback_query(call.id, "❌ Error: Song data lost.")
-            return
-
-        try:
-            bot.send_message(target_user_id, f"✅ Payment approved! Enjoy your song: *{song['title']}*", parse_mode="Markdown")
-
-            if song['file_type'] == 'audio':
-                bot.send_audio(target_user_id, song['file_id'], caption=f"🎶 {song['title']}")
-            elif song['file_type'] == 'voice':
-                bot.send_voice(target_user_id, song['file_id'], caption=f"🎶 {song['title']}")
-            elif song['file_type'] == 'video':
-                bot.send_video(target_user_id, song['file_id'], caption=f"🎶 {song['title']}")
-            else:
-                bot.send_document(target_user_id, song['file_id'], caption=f"🎶 {song['title']}")
-
-            bot.edit_message_caption(
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                caption="✅ Approved & Delivered",
-                reply_markup=None
-            )
-
-            pending_orders.pop(target_user_id, None)
-
-        except Exception as e:
-            bot.send_message(call.message.chat.id, f"❌ Delivery failed: {str(e)}")
-
-    elif action == "reject":
-        bot.send_message(target_user_id, "❌ Your payment was rejected. Please contact the admin for support.")
-        bot.edit_message_caption(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            caption="❌ Rejected",
-            reply_markup=None
+    
+    markup = types.InlineKeyboardMarkup()
+    for s_id, s_info in songs.items():
+        markup.add(
+            types.InlineKeyboardButton(f"✏️ Edit: {s_info['title']}", callback_data=f"adm_edit_{s_id}"),
+            types.InlineKeyboardButton(f"🗑 Delete", callback_data=f"adm_del_{s_id}")
         )
-        pending_orders.pop(target_user_id, None)
+    bot.send_message(message.chat.id, "🛠 *Store Inventory Manager*", reply_markup=markup, parse_mode="Markdown")
 
-# --- RUN BOT ---
-print("🎵 C CHOIR Album Bot is running...")
+@bot.callback_query_handler(func=lambda call: call.data.startswith('adm_'))
+def handle_admin_tools(call):
+    if not is_admin(call.from_user.id): return
+    action_data = call.data.split('_')
+    action, s_id = action_data[1], int(action_data[2])
+
+    if action == "del":
+        if s_id in songs:
+            del songs[s_id]
+            save_all_data()
+            bot.answer_callback_query(call.id, "Song removed from store.")
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            show_admin_panel(call.message)
+
+    elif action == "edit":
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("Change Title", callback_data=f"upd_title_{s_id}"),
+            types.InlineKeyboardButton("Change Price", callback_data=f"upd_price_{s_id}")
+        )
+        bot.edit_message_text(f"Editing: *{songs[s_id]['title']}*", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+@bot.message_handler(content_types=['audio', 'document', 'video', 'voice'])
+def handle_admin_upload(message):
+    if not is_admin(message.from_user.id): return
+    file_type = message.content_type
+    file_id = getattr(message, file_type).file_id if file_type != 'photo' else message.photo[-1].file_id
+    
+    msg = bot.reply_to(message, "✨ *New Song Detected!*\nPlease enter the *Song Title*:")
+    bot.register_next_step_handler(msg, lambda m: process_new_upload(m, file_id, file_type))
+
+def process_new_upload(message, file_id, file_type):
+    title = message.text
+    msg = bot.reply_to(message, f"💰 Enter the price for *{title}* (numbers only):")
+    bot.register_next_step_handler(msg, lambda m: finalize_upload(m, file_id, file_type, title))
+
+def finalize_upload(message, file_id, file_type, title):
+    new_id = max(songs.keys() or [0]) + 1
+    songs[new_id] = {
+        'title': title, 
+        'price': f"{message.text} ETB", 
+        'file_id': file_id, 
+        'file_type': file_type
+    }
+    save_all_data()
+    bot.reply_to(message, f"✅ *Successfully added:* {title}", reply_markup=get_main_keyboard(message.from_user.id), parse_mode="Markdown")
+
+print("C CHOIR Store Bot is active...")
 bot.infinity_polling()
-
